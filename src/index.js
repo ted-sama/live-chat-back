@@ -14,19 +14,19 @@ const ENV_FILE = `.env.${process.env.NODE_ENV || 'local'}`;
 dotenv.config({ path: ENV_FILE });
 
 // Clear upload folder on server start
-const directory = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../uploads"
-);
-fs.readdir(directory, (err, files) => {
-  if (err) throw err;
+// const directory = path.join(
+//   path.dirname(fileURLToPath(import.meta.url)),
+//   "../uploads"
+// );
+// fs.readdir(directory, (err, files) => {
+//   if (err) throw err;
 
-  for (const file of files) {
-    fs.unlink(path.join(directory, file), (err) => {
-      if (err) throw err;
-    });
-  }
-});
+//   for (const file of files) {
+//     fs.unlink(path.join(directory, file), (err) => {
+//       if (err) throw err;
+//     });
+//   }
+// });
 
 const __filename = fileURLToPath(import.meta.url); // Convertir l'URL du module en chemin de fichier
 const __dirname = path.dirname(__filename); // Obtenir le dossier du fichier

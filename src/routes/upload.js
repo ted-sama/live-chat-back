@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import upload from "../multer.js";
 import { addToQueue } from "../index.js";
 
-const ENV_FILE = `.env.${process.env.NODE_ENV || 'local'}`;
+const ENV_FILE = `.env.${process.env.NODE_ENV || "local"}`;
 
 dotenv.config({ path: ENV_FILE });
 
@@ -16,6 +16,8 @@ const router = Router();
 
 const __filename = fileURLToPath(import.meta.url); // Convertir l'URL du module en chemin de fichier
 const __dirname = path.dirname(__filename); // Obtenir le dossier du fichier
+
+const YOUTUBE_COOKIES = process.env.YOUTUBE_COOKIES || "";
 
 // duration is in milliseconds
 // default duration for images is 5 seconds, for videos is 0 (video original duration)
@@ -33,7 +35,7 @@ router.post("/image-by-file", upload.single("src"), (req, res) => {
     success: true,
     src,
     caption,
-    duration
+    duration,
   });
 });
 
@@ -50,7 +52,7 @@ router.post("/image-by-link", (req, res) => {
     success: true,
     src,
     caption,
-    duration
+    duration,
   });
 });
 
@@ -67,7 +69,7 @@ router.post("/video-by-file", upload.single("src"), (req, res) => {
     success: true,
     src,
     caption,
-    duration
+    duration,
   });
 });
 
@@ -84,7 +86,7 @@ router.post("/video-by-link", (req, res) => {
     success: true,
     src,
     caption,
-    duration
+    duration,
   });
 });
 
@@ -98,12 +100,6 @@ router.post("/video-by-link/youtube", async (req, res) => {
   const duration = parseInt(req.body.duration) || 0;
 
   try {
-    // Download the video using ytdl-core
-    const video = ytdl(src, {
-      format: "mp4",
-      quality: "highest",
-    });
-
     // Save the video to disk root/uploads folder with a random name
     const videoPath = path.join(
       __dirname,
@@ -112,7 +108,32 @@ router.post("/video-by-link/youtube", async (req, res) => {
     );
     const writeStream = fs.createWriteStream(videoPath);
 
+    // Download the video using ytdl-core
+    const video = ytdl(src, {
+      format: "mp4",
+      quality: "highest",
+      requestOptions: {
+        headers: {
+          Cookie: YOUTUBE_COOKIES,
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        },
+      },
+    });
+
+    // Handle download errors
+    video.on("error", (err) => {
+      console.error("Error downloading video:", err);
+      res.status(500).send("Error downloading video");
+    });
+
+    // Save file
     video.pipe(writeStream);
+
+    writeStream.on("error", (err) => {
+      console.error("Error downloading video:", err);
+      res.status(500).send("Error downloading video");
+    });
 
     writeStream.on("finish", () => {
       console.log("Video downloaded successfully");
@@ -122,19 +143,12 @@ router.post("/video-by-link/youtube", async (req, res) => {
         caption,
         duration,
       });
-      res
-        .status(200)
-        .json({
-          success: true,
-          src: `${process.env.SERVER_URL}/uploads/${path.basename(videoPath)}`,
-          caption,
-          duration,
-        });
-    });
-
-    writeStream.on("error", (err) => {
-      console.error("Error downloading video:", err);
-      res.status(500).send("Error downloading video");
+      res.status(200).json({
+        success: true,
+        src: `${process.env.SERVER_URL}/uploads/${path.basename(videoPath)}`,
+        caption,
+        duration,
+      });
     });
   } catch (error) {
     console.error("Error:", error);

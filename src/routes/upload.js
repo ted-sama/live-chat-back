@@ -18,6 +18,7 @@ const __filename = fileURLToPath(import.meta.url); // Convertir l'URL du module 
 const __dirname = path.dirname(__filename); // Obtenir le dossier du fichier
 
 const YOUTUBE_COOKIES = process.env.YOUTUBE_COOKIES || "";
+const YOUTUBE_PROXY_URL = process.env.YOUTUBE_PROXY_URL || "";
 
 // duration is in milliseconds
 // default duration for images is 5 seconds, for videos is 0 (video original duration)
@@ -109,7 +110,7 @@ router.post("/video-by-link/youtube", async (req, res) => {
     const writeStream = fs.createWriteStream(videoPath);
 
     // Download the video using ytdl-core
-    const video = ytdl(src, {
+    const ytdlOptions = {
       format: "mp4",
       quality: "highest",
       requestOptions: {
@@ -119,7 +120,15 @@ router.post("/video-by-link/youtube", async (req, res) => {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         },
       },
-    });
+    };
+
+    // Add proxy if configured (for residential IP bypass)
+    if (YOUTUBE_PROXY_URL) {
+      ytdlOptions.requestOptions.proxy = YOUTUBE_PROXY_URL;
+      console.log("Using proxy for YouTube download:", YOUTUBE_PROXY_URL);
+    }
+
+    const video = ytdl(src, ytdlOptions);
 
     // Handle download errors
     video.on("error", (err) => {

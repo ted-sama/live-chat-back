@@ -2,11 +2,15 @@ import { Router } from "express";
 // import axios from 'axios';
 import fs from "fs";
 import path from "path";
+import { exec } from "child_process";
+import { promisify } from "util";
 import ytdl from "ytdl-core";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import upload from "../multer.js";
 import { addToQueue } from "../index.js";
+
+const execAsync = promisify(exec);
 
 const ENV_FILE = `.env.${process.env.NODE_ENV || "local"}`;
 
@@ -98,16 +102,15 @@ router.post("/video-by-link/youtube", async (req, res) => {
     return res.status(400).json({ error: "YouTube video URL is required" });
 
   const caption = req.body.caption || "";
-  const duration = parseInt(req.body.duration) || 0;
+  const trimStart = parseInt(req.body.trimStart) || 0;
+  const trimEnd = parseInt(req.body.trimEnd) || 0;
+
+  const timestamp = Date.now();
+  const tempPath = path.join(__dirname, "../../uploads", `${timestamp}_temp.mp4`);
+  const finalPath = path.join(__dirname, "../../uploads", `${timestamp}.mp4`);
 
   try {
-    // Save the video to disk root/uploads folder with a random name
-    const videoPath = path.join(
-      __dirname,
-      "../../uploads",
-      `${Date.now()}.mp4`
-    );
-    const writeStream = fs.createWriteStream(videoPath);
+    console.log("Downloading YouTube video...");
 
     // Download the video using ytdl-core
     const ytdlOptions = {
@@ -122,46 +125,71 @@ router.post("/video-by-link/youtube", async (req, res) => {
       },
     };
 
-    // Add proxy if configured (for residential IP bypass)
+    // Add proxy if configured
     if (YOUTUBE_PROXY_URL) {
       ytdlOptions.requestOptions.proxy = YOUTUBE_PROXY_URL;
       console.log("Using proxy for YouTube download:", YOUTUBE_PROXY_URL);
     }
 
-    const video = ytdl(src, ytdlOptions);
+    // Download to temp file
+    await new Promise((resolve, reject) => {
+      const video = ytdl(src, ytdlOptions);
+      const writeStream = fs.createWriteStream(tempPath);
 
-    // Handle download errors
-    video.on("error", (err) => {
-      console.error("Error downloading video:", err);
-      res.status(500).send("Error downloading video");
+      video.on("error", reject);
+      writeStream.on("error", reject);
+      writeStream.on("finish", resolve);
+
+      video.pipe(writeStream);
     });
 
-    // Save file
-    video.pipe(writeStream);
+    console.log("Video downloaded, processing...");
 
-    writeStream.on("error", (err) => {
-      console.error("Error downloading video:", err);
-      res.status(500).send("Error downloading video");
+    // Trim with ffmpeg if needed
+    if (trimStart > 0 || trimEnd > 0) {
+      let ffmpegCmd = `ffmpeg -y -i "${tempPath}"`;
+
+      if (trimStart > 0) {
+        ffmpegCmd += ` -ss ${trimStart}`;
+      }
+
+      if (trimEnd > 0) {
+        ffmpegCmd += ` -to ${trimEnd}`;
+      }
+
+      ffmpegCmd += ` -c copy "${finalPath}"`;
+
+      console.log("Running ffmpeg:", ffmpegCmd);
+      await execAsync(ffmpegCmd);
+
+      // Delete temp file
+      fs.unlinkSync(tempPath);
+    } else {
+      // No trim, just rename
+      fs.renameSync(tempPath, finalPath);
+    }
+
+    console.log("Video processed successfully");
+
+    addToQueue({
+      type: "video",
+      src: `${process.env.SERVER_URL}/uploads/${path.basename(finalPath)}`,
+      caption,
+      duration: 0,
     });
 
-    writeStream.on("finish", () => {
-      console.log("Video downloaded successfully");
-      addToQueue({
-        type: "video",
-        src: `${process.env.SERVER_URL}/uploads/${path.basename(videoPath)}`,
-        caption,
-        duration,
-      });
-      res.status(200).json({
-        success: true,
-        src: `${process.env.SERVER_URL}/uploads/${path.basename(videoPath)}`,
-        caption,
-        duration,
-      });
+    res.status(200).json({
+      success: true,
+      src: `${process.env.SERVER_URL}/uploads/${path.basename(finalPath)}`,
+      caption,
+      duration: 0,
     });
   } catch (error) {
     console.error("Error:", error);
-    res.status(500).send("Error downloading video");
+    // Cleanup on error
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+    res.status(500).send("Error processing video");
   }
 });
 

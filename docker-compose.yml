@@ -1,0 +1,55 @@
+name: live-chat
+
+services:
+  api:
+    build: .
+    image: live-chat-back:latest
+    container_name: live-chat-api
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      UPLOADS_DIR: /app/uploads
+    ports:
+      # LAN access: uploads sent from home skip the Cloudflare 100MB body limit.
+      - "3000:3000"
+    volumes:
+      - uploads:/app/uploads
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: live-chat-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file:
+      - .env.production
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  uploads:

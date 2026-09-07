@@ -41,3 +41,7 @@ build/
 Thumbs.db
 
 uploads/*
+# Keep the env template tracked
+!.env.example
+
+cloudflare.txt

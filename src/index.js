@@ -1,35 +1,22 @@
 import express from "express";
 import http from "http";
 import cors from "cors";
-import path from "path";
-import fs from "fs";
-import dotenv from "dotenv";
+import multer from "multer";
 import { Server } from "socket.io";
+import { config } from "./config.js";
+import { UPLOADS_DIR } from "./paths.js";
+import { purgeUploads, startUploadsJanitor, uploadsUsage } from "./cleanup.js";
 import uploadRouter from "./routes/upload.js";
-import { fileURLToPath } from "url";
 import { getVideoDuration } from "./utils.js";
 
-const ENV_FILE = `.env.${process.env.NODE_ENV || 'local'}`;
+if (process.env.NODE_ENV === "production" && !config.apiKey) {
+  console.error("API_KEY is required when NODE_ENV=production");
+  process.exit(1);
+}
 
-dotenv.config({ path: ENV_FILE });
-
-// Clear upload folder on server start
-const directory = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../uploads"
-);
-fs.readdir(directory, (err, files) => {
-  if (err) throw err;
-
-  for (const file of files) {
-    fs.unlink(path.join(directory, file), (err) => {
-      if (err) throw err;
-    });
-  }
-});
-
-const __filename = fileURLToPath(import.meta.url); // Convertir l'URL du module en chemin de fichier
-const __dirname = path.dirname(__filename); // Obtenir le dossier du fichier
+// The queue lives in memory, so leftovers from a previous run can never be played.
+await purgeUploads(UPLOADS_DIR);
+startUploadsJanitor(UPLOADS_DIR, config.upload);
 
 // Queue logic
 const queue = [];
@@ -43,7 +30,7 @@ export const addToQueue = ({ type, src, caption, duration }) => {
     duration,
   });
 
-  console.log("Item added to queue:", queue);
+  console.log("Item added to queue:", queue.length);
 
   if (!isPlaying) {
     playQueue();
@@ -51,87 +38,108 @@ export const addToQueue = ({ type, src, caption, duration }) => {
 };
 
 const playQueue = async () => {
-  console.log("playQueue: Queue length", queue.length);
-  console.log("Queue:", queue);
-
-  // Si la queue est vide, arrêter la fonction
   if (queue.length === 0) {
     console.log("Queue is empty, waiting...");
-    return; // Queue vide, rien à jouer
+    return;
   }
 
-  // Si un élément est déjà en train de jouer, on n'entre pas dans la fonction
   if (isPlaying) {
     console.log("Already playing, skipping...");
     return;
   }
 
-  // Récupérer et retirer le premier élément de la queue
   const item = queue.shift();
-  console.log("Playing:", item); // Devrait s'afficher quand un élément est pris en charge
+  console.log("Playing:", item);
 
-  let delay = 0; // Initialiser le délai à 0
+  let delay = 0;
 
-  isPlaying = true; // Marque l'état comme étant "en train de jouer"
+  isPlaying = true;
 
-  // Si c'est une image ou une vidéo, émettre un événement
   if (item.type === "image" || item.type === "video") {
-    console.log("Item to play:", item); // Assure-toi que l'item est bien un objet valide
     io.emit("play", item);
 
-    // Si c'est une image, ajuster le délai selon la durée de l'image
     if (item.type === "image") {
-      delay = item.duration + 1000; // Durée image + 1 seconde
-      console.log("Image duration:", item.duration);  
-    }
-    // Si c'est une vidéo, ajuster le délai selon la durée de la vidéo
-    else if (item.type === "video") {
-      let duration = 0; // Initialiser la durée à 0
+      delay = item.duration + 1000;
+    } else if (item.type === "video") {
+      let duration = 0;
 
       try {
         duration = await getVideoDuration(item.src);
-        console.log("Video duration:", duration);
       } catch (error) {
         console.error("Error getting video duration:", error);
       }
 
       if (item.duration === 0) {
-        delay = duration * 1000 + 1000; // Durée vidéo + 1 seconde
+        delay = duration * 1000 + 1000;
       } else {
-        // delay = item.duration >= duration * 1000 ? duration * 1000 + 1000 : item.duration + 1000;
         delay = item.duration + 1000;
       }
     }
   }
 
-  // Une fois le délai écoulé, relancer la fonction playQueue
   setTimeout(() => {
-    isPlaying = false; // Libère l'état "en train de jouer"
+    isPlaying = false;
     console.log("Finished playing, next item...");
-    playQueue(); // Relance la fonction pour le prochain élément
+    playQueue();
   }, delay);
 };
+
+const corsOrigin = config.corsOrigins.includes("*") ? "*" : config.corsOrigins;
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: corsOrigin,
     methods: ["GET", "POST"],
   },
 });
 
 // Middleware
-app.use(cors());
-app.use(express.json());
-app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+app.set("trust proxy", 1);
+app.use(cors({ origin: corsOrigin }));
+app.use(express.json({ limit: "1mb" }));
+app.use(
+  "/uploads",
+  express.static(UPLOADS_DIR, {
+    index: false,
+    dotfiles: "ignore",
+    maxAge: "1h",
+    setHeaders: (res) => res.setHeader("X-Content-Type-Options", "nosniff"),
+  })
+);
 
 // API routes
 app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
+app.get("/health", async (req, res) => {
+  const uploads = await uploadsUsage(UPLOADS_DIR);
+  res.json({
+    status: "ok",
+    uptime: Math.round(process.uptime()),
+    queue: queue.length,
+    isPlaying,
+    uploads,
+  });
+});
+
 app.use("/api/upload", uploadRouter);
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 415;
+    const message =
+      err.code === "LIMIT_FILE_SIZE"
+        ? `File too large (max ${Math.floor(config.upload.maxBytes / 1048576)}MB)`
+        : "Unsupported file type";
+    return res.status(status).json({ error: message });
+  }
+
+  console.error("Unhandled error:", err);
+  res.status(500).json({ error: "Internal server error" });
+});
 
 // Socket.io
 io.on("connection", (socket) => {
@@ -143,8 +151,16 @@ io.on("connection", (socket) => {
 });
 
 // Start server
-const SERVER_URL = process.env.SERVER_URL;
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server is running on ${SERVER_URL}`);
+server.listen(config.port, "0.0.0.0", () => {
+  console.log(`Server is running on ${config.serverUrl} (port ${config.port})`);
 });
+
+const shutdown = (signal) => {
+  console.log(`${signal} received, shutting down`);
+  io.close();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10000).unref();
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

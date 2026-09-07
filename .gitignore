@@ -44,4 +44,4 @@ uploads/*
 # Keep the env template tracked
 !.env.example
 
-cloudflare.txt
+cloudflared.txt
